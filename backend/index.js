@@ -4,7 +4,7 @@ import axios from "axios";
 const app = express();
 app.use(express.json());
 
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
+const OLLAMA_URL = process.env.OLLAMA_URL || "http://ollama:11434";
 
 /**
  * Endpoint básico de chat
@@ -15,7 +15,8 @@ app.post("/chat", async (req, res) => {
 
         const response = await axios.post(`${OLLAMA_URL}/api/generate`, {
             model: "llama3",
-            prompt
+            prompt,
+            stream: false
         });
 
         res.json({ respuesta: response.data.response });
@@ -39,7 +40,8 @@ Respondé claro, corto y útil.
 
 Pregunta del usuario:
 ${pregunta}
-`
+`,
+            stream: false
         });
 
         res.json({ respuesta: response.data.response });
