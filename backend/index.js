@@ -1,7 +1,13 @@
 import express from "express";
 import axios from "axios";
 import multer from "multer";
-import pdf from "pdf-parse";
+import { createRequire } from "module";
+
+
+const require = createRequire(import.meta.url);
+const pdfParse = require("pdf-parse");
+
+
 
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -45,7 +51,7 @@ app.post("/analizar-pdf", upload.single("pdf"), async (req, res) => {
         if (!req.file) return res.status(400).json({ error: "No se subió ningún PDF" });
 
         const { pregunta } = req.body;
-        const data = await pdf(req.file.buffer);
+        const data = await pdfParse(req.file.buffer);
         const textoPdf = data.text;
 
         const response = await axios.post(`${OLLAMA_URL}/api/generate`, {
