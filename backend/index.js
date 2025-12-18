@@ -16,11 +16,13 @@ app.post("/chat", async (req, res) => {
         const response = await axios.post(`${OLLAMA_URL}/api/generate`, {
             model: "llama3",
             prompt,
-            stream: false
+            stream: false // Importante para que axios no falle
         });
 
         res.json({ respuesta: response.data.response });
     } catch (error) {
+        // Esto te ayudará a ver en la consola qué está fallando realmente
+        console.error("Error en Ollama:", error.response?.data || error.message);
         res.status(500).json({ error: error.message });
     }
 });
