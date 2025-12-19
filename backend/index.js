@@ -9,8 +9,24 @@ import path from "path";
 const require = createRequire(import.meta.url);
 const pdfParse = require("pdf-parse");
 
-
 const app = express();
+/* 
+borrar esto
+*/
+/* const cors = require('cors'); */
+import cors from 'cors';
+
+// 1. Configurar CORS (Poner ANTES de las rutas)
+app.use(cors({
+  origin: 'http://localhost:3001',
+  methods: ['GET', 'POST'],
+  credentials: true
+}));
+/* 
+borrar esto
+*/
+
+
 const uploadMemory = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: 20 * 1024 * 1024 } // 20 MB
