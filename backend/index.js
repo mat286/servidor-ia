@@ -4,6 +4,7 @@ import multer from "multer";
 import { createRequire } from "module";
 import { indexDocs, searchContext } from "./rag/rag.js";
 import { agentes } from "./agentes.js";
+import path from "path";
 
 const require = createRequire(import.meta.url);
 const pdfParse = require("pdf-parse");
@@ -81,7 +82,7 @@ app.post("/chat", async (req, res) => {
         const response = await axios.post(`${OLLAMA_URL}/api/generate`, {
             model: MODELO_TEXTO,
             prompt,
-            stream: true // Importante para que axios no falle
+            stream: false // Importante para que axios no falle
         });
 
         res.json({ respuesta: response.data.response });
