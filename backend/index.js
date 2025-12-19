@@ -78,7 +78,7 @@ app.post("/chat", async (req, res) => {
         const response = await axios.post(`${OLLAMA_URL}/api/generate`, {
             model: MODELO_TEXTO,
             prompt,
-            stream: false // Importante para que axios no falle
+            stream: true // Importante para que axios no falle
         });
 
         res.json({ respuesta: response.data.response });
