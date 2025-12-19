@@ -117,7 +117,7 @@ ${pregunta}
     const response = await axios.post("http://ollama:11434/api/generate", {
         model: "llama3:latest",
         prompt: promptFinal,
-        stream: false
+        stream: true
     });
 
     res.send(response.data.response);
