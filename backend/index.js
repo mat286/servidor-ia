@@ -2,15 +2,18 @@ import express from "express";
 import axios from "axios";
 import multer from "multer";
 import { createRequire } from "module";
-
+import { indexDocs, searchContext } from "./rag/rag.js";
+import { agentes } from "./agentes.js";
 
 const require = createRequire(import.meta.url);
 const pdfParse = require("pdf-parse");
 
 
-
 const app = express();
-const upload = multer({ storage: multer.memoryStorage() });
+const uploadMemory = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 20 * 1024 * 1024 } // 20 MB
+});
 
 // Configuración de límites (Suficiente con estas dos líneas)
 app.use(express.json({ limit: '50mb' }));
@@ -22,7 +25,7 @@ const MODELO_VISION = "llava";
 /**
  * ENDPOINT PARA IMÁGENES (Vision)
  */
-app.post("/vision", upload.single("image"), async (req, res) => {
+app.post("/vision", uploadMemory.single("image"), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ error: "No se subió ninguna imagen" });
 
@@ -46,7 +49,7 @@ app.post("/vision", upload.single("image"), async (req, res) => {
 /**
  * ENDPOINT PARA PDF
  */
-app.post("/analizar-pdf", upload.single("pdf"), async (req, res) => {
+app.post("/analizar-pdf", uploadMemory.single("pdf"), async (req, res) => {
     try {
         if (!req.file) return res.status(400).json({ error: "No se subió ningún PDF" });
 
@@ -92,27 +95,84 @@ app.post("/chat", async (req, res) => {
 /**
  * Ejemplo de agente especializado reopened
  */
-app.post("/agente/soporte", async (req, res) => {
-    try {
-        const { pregunta } = req.body;
+app.post("/agente/:nombre", async (req, res) => {
+    const agente = agentes[req.params.nombre];
+    if (!agente) return res.status(404).send("Agente no existe");
 
-        const response = await axios.post(`${OLLAMA_URL}/api/generate`, {
-            model: MODELO_TEXTO,
-            prompt: `
-Sos un agente de soporte técnico.
-Respondé claro, corto y útil.
+    const pregunta = req.body.prompt;
 
-Pregunta del usuario:
+    const contexto = await searchContext(pregunta);
+
+    const promptFinal = `
+${agente}
+
+Información:
+${contexto.join("\n")}
+
+Pregunta:
 ${pregunta}
-`,
-            stream: false
-        });
+`;
 
-        res.json({ respuesta: response.data.response });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
+    const response = await axios.post("http://ollama:11434/api/generate", {
+        model: "llama3:latest",
+        prompt: promptFinal,
+        stream: false
+    });
+
+    res.send(response.data.response);
+});
+
+
+// ==============================
+// Configuración Multer
+// ==============================
+const storageDocs = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, "docs/");
+    },
+    filename: (req, file, cb) => {
+        cb(null, Date.now() + "-" + file.originalname);
     }
 });
+
+const uploadDocs = multer({
+    storage: storageDocs,
+    fileFilter: (req, file, cb) => {
+        const allowed = [".pdf", ".txt", ".md"];
+        const ext = path.extname(file.originalname).toLowerCase();
+
+        if (!allowed.includes(ext)) {
+            return cb(new Error("Formato no permitido"));
+        }
+        cb(null, true);
+    }
+});
+
+
+// ==============================
+// Endpoint de upload
+// ==============================
+app.post("/rag/upload", uploadDocs.single("file"), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: "No se envió archivo" });
+        }
+
+        // Reindexar RAG
+        await indexDocs("docs");
+
+        res.json({
+            message: "Archivo cargado e indexado correctamente",
+            file: req.file.filename
+        });
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Error indexando documentos" });
+    }
+});
+
+
 
 app.get("/", (req, res) => {
     res.send("Servidor IA funcionando 🚀");
