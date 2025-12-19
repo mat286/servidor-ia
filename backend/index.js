@@ -101,6 +101,7 @@ app.post("/agente/:nombre", async (req, res) => {
     if (!agente) return res.status(404).send("Agente no existe");
 
     const pregunta = req.body.prompt;
+    const stream = req.body.stream || false;
 
     const contexto = await searchContext(pregunta);
 
@@ -117,7 +118,7 @@ ${pregunta}
     const response = await axios.post("http://ollama:11434/api/generate", {
         model: "llama3:latest",
         prompt: promptFinal,
-        stream: true
+        stream: stream
     });
 
     res.send(response.data.response);
