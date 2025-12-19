@@ -18,9 +18,9 @@ import cors from 'cors';
 
 // 1. Configurar CORS (Poner ANTES de las rutas)
 app.use(cors({
-  origin: 'http://localhost:3001',
-  methods: ['GET', 'POST'],
-  credentials: true
+    origin: 'http://localhost:3001',
+    methods: ['GET', 'POST'],
+    credentials: true
 }));
 /* 
 borrar esto
@@ -110,14 +110,14 @@ app.post("/chat", async (req, res) => {
 });
 
 /**
- * Ejemplo de agente especializado reopened
+ * Agente con STREAMING real
  */
 app.post("/agente/:nombre", async (req, res) => {
     const agente = agentes[req.params.nombre];
     if (!agente) return res.status(404).send("Agente no existe");
 
     const pregunta = req.body.prompt;
-    const stream = req.body.stream || false;
+    const stream = req.body.stream === true;
 
     const contexto = await searchContext(pregunta);
 
@@ -131,13 +131,52 @@ Pregunta:
 ${pregunta}
 `;
 
-    const response = await axios.post("http://ollama:11434/api/generate", {
-        model: "llama3:latest",
-        prompt: promptFinal,
-        stream: stream
+    // 🔹 Headers SSE
+    if (stream) {
+        res.setHeader("Content-Type", "text/event-stream");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+    }
+
+    // 🔹 Llamada a Ollama en modo stream
+    const ollamaResponse = await axios.post(
+        "http://ollama:11434/api/generate",
+        {
+            model: "llama3:latest",
+            prompt: promptFinal,
+            stream: true
+        },
+        {
+            responseType: "stream"
+        }
+    );
+
+    // 🔹 Leer el stream de Ollama
+    ollamaResponse.data.on("data", chunk => {
+        const lines = chunk.toString().split("\n").filter(Boolean);
+
+        for (const line of lines) {
+            const parsed = JSON.parse(line);
+
+            if (parsed.response) {
+                if (stream) {
+                    res.write(`data: ${parsed.response}\n\n`);
+                }
+            }
+
+            if (parsed.done) {
+                if (stream) {
+                    res.write("data: [DONE]\n\n");
+                    res.end();
+                }
+            }
+        }
     });
 
-    res.send(response.data.response);
+    ollamaResponse.data.on("error", err => {
+        console.error("Stream error:", err);
+        res.end();
+    });
 });
 
 
