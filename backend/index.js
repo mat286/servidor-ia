@@ -154,6 +154,7 @@ const uploadDocs = multer({
 // Endpoint de upload
 // ==============================
 app.post("/rag/upload", uploadDocs.single("file"), async (req, res) => {
+    console.log("Solicitud recibida en /rag/upload");
     try {
         if (!req.file) {
             return res.status(400).json({ error: "No se envió archivo" });
@@ -176,6 +177,7 @@ app.post("/rag/upload", uploadDocs.single("file"), async (req, res) => {
 
 
 app.get("/", (req, res) => {
+    console.log("Solicitud recibida en /");
     res.send("Servidor IA funcionando 🚀");
 });
 
