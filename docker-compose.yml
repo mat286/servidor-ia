@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   ollama:
     image: ollama/ollama
@@ -9,17 +7,48 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
+    networks:
+      - ia-network
 
   backend:
     build: ./backend
     container_name: backend
     ports:
       - "3000:3000"
+    env_file:
+      - .env
     environment:
       OLLAMA_URL: http://ollama:11434
+      MODELO_TEXTO: ${MODELO_TEXTO:-qwen2.5:3b}
+      MODELO_VISION: ${MODELO_VISION:-llava:7b}
+      MODELO_EMBEDDINGS: ${MODELO_EMBEDDINGS:-nomic-embed-text}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-15m}
+      OLLAMA_NUM_CTX: ${OLLAMA_NUM_CTX:-2048}
+      OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-256}
+      OLLAMA_TEMPERATURE: ${OLLAMA_TEMPERATURE:-0.2}
+      ENABLE_SEMANTIC_ROUTING: ${ENABLE_SEMANTIC_ROUTING:-false}
     depends_on:
       - ollama
     restart: unless-stopped
+    networks:
+      - ia-network
+
+  frontend:
+    build: ./frontend
+    container_name: frontend
+    ports:
+      - "3001:3001"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - ia-network
+    environment:
+      VITE_API_URL: http://backend:3000
 
 volumes:
   ollama_data:
+
+networks:
+  ia-network:
+    driver: bridge

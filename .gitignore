@@ -1,0 +1,58 @@
+# =========================
+# Secrets and local env
+# =========================
+.env
+.env.*
+!.env.example
+!.env.*.example
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+
+# =========================
+# Dependencies and builds
+# =========================
+**/node_modules/
+**/.pnpm-store/
+**/dist/
+**/build/
+**/.cache/
+coverage/
+
+# =========================
+# Logs and temp files
+# =========================
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.swp
+
+# =========================
+# IDE and OS files
+# =========================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# =========================
+# Sensitive uploaded documents and generated RAG data
+# Keep the code, ignore runtime content
+# =========================
+backend/rag/**/docs/**
+!backend/rag/**/docs/.gitkeep
+backend/rag/**/generated/**
+!backend/rag/**/generated/.gitkeep
+backend/rag/**/chunks.json
+backend/rag/**/embeddings.json
+backend/docs/uploads/**
+uploads/**
+storage/uploads/**

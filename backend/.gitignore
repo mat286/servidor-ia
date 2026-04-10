@@ -24,3 +24,12 @@ Thumbs.db
 tmp/
 dist/
 build/
+
+# Datos RAG y documentos sensibles
+rag/**/docs/**
+!rag/**/docs/.gitkeep
+rag/**/generated/**
+!rag/**/generated/.gitkeep
+rag/**/chunks.json
+rag/**/embeddings.json
+uploads/

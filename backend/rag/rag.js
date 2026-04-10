@@ -4,7 +4,8 @@ import path from "path";
 import axios from "axios";
 import pdf from "pdf-parse";
 
-const OLLAMA_URL = "http://ollama:11434";
+const OLLAMA_URL = process.env.OLLAMA_URL || "http://ollama:11434";
+
 
 // ==============================
 // 1. Leer archivos
@@ -22,23 +23,47 @@ async function readPdf(filePath) {
 // ==============================
 // 2. Split en chunks
 // ==============================
-function splitText(text, chunkSize = 500) {
+function splitTextSmart(text, maxLength = 800) {
+    const paragraphs = text
+        .split(/\n{2,}/)
+        .map(p => p.trim())
+        .filter(Boolean);
+
     const chunks = [];
-    for (let i = 0; i < text.length; i += chunkSize) {
-        chunks.push(text.slice(i, i + chunkSize));
+    let current = "";
+
+    for (const p of paragraphs) {
+        if ((current + "\n\n" + p).length > maxLength) {
+            chunks.push(current);
+            current = p;
+        } else {
+            current += (current ? "\n\n" : "") + p;
+        }
     }
+
+    if (current) chunks.push(current);
     return chunks;
 }
+
 
 // ==============================
 // 3. Embeddings con Ollama
 // ==============================
+const embeddingCache = new Map();
+
 async function embed(text) {
+    if (embeddingCache.has(text)) {
+        return embeddingCache.get(text);
+    }
+
     const res = await axios.post(`${OLLAMA_URL}/api/embeddings`, {
         model: "nomic-embed-text",
         prompt: text
     });
-    return res.data.embedding;
+
+    const embedding = res.data.embedding;
+    embeddingCache.set(text, embedding);
+    return embedding;
 }
 
 // ==============================
@@ -85,10 +110,14 @@ export async function indexDocs(docsDir = "docs") {
             continue;
         }
 
-        const parts = splitText(text);
+        const parts = splitTextSmart(text);
 
         for (const part of parts) {
-            chunks.push(part);
+            chunks.push({
+                text: part,
+                source: file,
+                type: file.endsWith(".pdf") ? "pdf" : "texto",
+            });
             embeddings.push(await embed(part));
         }
     }
@@ -120,5 +149,10 @@ export async function searchContext(query, topK = 3) {
     return scores
         .sort((a, b) => b.score - a.score)
         .slice(0, topK)
-        .map(s => s.text);
+        .map(s => ({
+            text: s.text,
+            source: s.source,
+            type: s.type,
+            score: s.score
+        }));
 }
