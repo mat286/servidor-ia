@@ -19,5 +19,5 @@ Formato de respuesta:
 2. Sección "Fuentes" con las referencias exactas
 `,
     ragDomain: "documental",
-    model: "llama3"
+    model: process.env.MODELO_TEXTO || "qwen2.5:3b"
 });

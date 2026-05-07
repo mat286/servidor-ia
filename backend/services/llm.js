@@ -1,5 +1,6 @@
 // Servicio LLM centralizado con Ollama
 import axios from "axios";
+import CircuitBreaker from "./circuitBreaker.js";
 
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
 const DEFAULT_MODEL = process.env.MODELO_TEXTO || "qwen2.5:3b";
@@ -7,16 +8,51 @@ const OLLAMA_KEEP_ALIVE = process.env.OLLAMA_KEEP_ALIVE || "15m";
 const OLLAMA_NUM_CTX = Number(process.env.OLLAMA_NUM_CTX || 2048);
 const OLLAMA_NUM_PREDICT = Number(process.env.OLLAMA_NUM_PREDICT || 512);
 const OLLAMA_TEMPERATURE = Number(process.env.OLLAMA_TEMPERATURE || 0.2);
+const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 180000);
+const OLLAMA_MAX_RETRIES = Number(process.env.OLLAMA_MAX_RETRIES || 2);
 
 /**
- * Servicio para interactuar con Ollama
+ * Servicio para interactuar con Ollama con Circuit Breaker
  */
 export class LLMService {
-    constructor(model = DEFAULT_MODEL) {
+    constructor(model = DEFAULT_MODEL, options = {}) {
         this.model = model;
+        this.numCtx = options.numCtx || OLLAMA_NUM_CTX;
+        this.numPredict = options.numPredict || OLLAMA_NUM_PREDICT;
+        this.temperature = options.temperature !== undefined ? options.temperature : OLLAMA_TEMPERATURE;
+        const timeoutMs = options.timeout !== undefined ? options.timeout : OLLAMA_TIMEOUT_MS;
         this.http = axios.create({
             baseURL: OLLAMA_URL,
-            timeout: 180000
+            timeout: timeoutMs
+        });
+        this.circuitBreaker = new CircuitBreaker({
+            failureThreshold: 5,
+            successThreshold: 2,
+            timeout: 30000
+        });
+    }
+
+    isRetryableError(error) {
+        const code = error?.code;
+        return code === "ECONNABORTED" || code === "ECONNRESET" || code === "ETIMEDOUT";
+    }
+
+    async postGenerate(payload, config = {}) {
+        return this.circuitBreaker.execute(async () => {
+            let lastError = null;
+
+            for (let attempt = 0; attempt <= OLLAMA_MAX_RETRIES; attempt++) {
+                try {
+                    return await this.http.post("/api/generate", payload, config);
+                } catch (error) {
+                    lastError = error;
+                    if (!this.isRetryableError(error) || attempt === OLLAMA_MAX_RETRIES) {
+                        break;
+                    }
+                }
+            }
+
+            throw lastError;
         });
     }
 
@@ -49,9 +85,9 @@ Continúa exactamente desde donde quedó la respuesta anterior, sin repetir lo y
             stream,
             keep_alive: OLLAMA_KEEP_ALIVE,
             options: {
-                temperature: OLLAMA_TEMPERATURE,
-                num_ctx: OLLAMA_NUM_CTX,
-                num_predict: OLLAMA_NUM_PREDICT
+                temperature: this.temperature,
+                num_ctx: this.numCtx,
+                num_predict: this.numPredict
             }
         };
     }
@@ -61,8 +97,7 @@ Continúa exactamente desde donde quedó la respuesta anterior, sin repetir lo y
      */
     async generate(prompt, systemPrompt = null, allowContinuation = true) {
         try {
-            const response = await this.http.post(
-                "/api/generate",
+            const response = await this.postGenerate(
                 this.buildPayload(prompt, systemPrompt, false)
             );
 
@@ -90,12 +125,9 @@ Continúa exactamente desde donde quedó la respuesta anterior, sin repetir lo y
      */
     async generateStream(prompt, systemPrompt = null, onChunk = null, allowContinuation = true) {
         try {
-            const response = await this.http.post(
-                "/api/generate",
+            const response = await this.postGenerate(
                 this.buildPayload(prompt, systemPrompt, true),
-                {
-                    responseType: "stream"
-                }
+                { responseType: "stream" }
             );
 
             return new Promise((resolve, reject) => {

@@ -80,15 +80,7 @@ ${chunk.text.trim()}
  * Genera instrucciones de citas para el system prompt
  */
 export function getCitationInstructions() {
-    return `
-REGLAS DE CITACIÓN OBLIGATORIAS:
-1. Toda respuesta DEBE basarse ÚNICAMENTE en el contexto proporcionado.
-2. Si mencionas una fuente dentro del texto, usa solo marcadores como [Fuente 1] o [Fuente 2].
-3. NO inventes URLs, links Markdown, nombres de documentos ni una sección manual de referencias; el sistema agrega las referencias reales al final.
-4. Si el contexto no contiene información suficiente, di explícitamente: "No hay información suficiente en la base documental para responder esta pregunta."
-5. NUNCA inventes datos, fechas, números, menús o pasos que no estén en el contexto.
-6. Priorizá claridad, respuesta breve y pasos numerados cuando el usuario pregunte cómo hacer algo.
-`;
+    return `Basate ÚNICAMENTE en el contexto. Respondé en español claro. No inventes datos ni referencias.`;
 }
 
 /**

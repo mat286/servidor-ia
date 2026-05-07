@@ -19,5 +19,5 @@ IMPORTANTE:
 - No inventes soluciones que no estén documentadas
 `,
     ragDomain: "soporteTecnico",
-    model: "llama3"
+    model: process.env.MODELO_TEXTO || "qwen2.5:3b"
 });

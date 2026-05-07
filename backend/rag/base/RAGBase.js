@@ -1,15 +1,19 @@
 // RAG Base - Sistema de RAG con metadata y citas
 import fs from "fs";
 import path from "path";
+import { createHash } from "crypto";
 import axios from "axios";
 import pdf from "pdf-parse";
 import mammoth from "mammoth";
 import WordExtractor from "word-extractor";
+import EmbeddingCache from "../../services/embeddingCache.js";
 
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434";
 const EMBEDDING_MODEL = process.env.MODELO_EMBEDDINGS || "nomic-embed-text";
 const DEFAULT_CHUNK_SIZE = Number(process.env.RAG_CHUNK_SIZE || 700);
 const DEFAULT_CHUNK_OVERLAP = Number(process.env.RAG_CHUNK_OVERLAP || 80);
+const EMBEDDING_CACHE_MAX = Number(process.env.RAG_EMBEDDING_CACHE_MAX || 2000);
+const EMBEDDING_CACHE_TTL_MS = Number(process.env.RAG_EMBEDDING_CACHE_TTL_MS || 6 * 60 * 60 * 1000);
 const wordExtractor = new WordExtractor();
 
 /**
@@ -24,7 +28,7 @@ export class RAGBase {
         this.embeddingsFile = path.join(ragDir, "embeddings.json");
         this.cachedChunks = null;
         this.cachedEmbeddings = null;
-        this.embeddingCache = new Map();
+        this.embeddingCache = new EmbeddingCache(path.join(ragDir, "embedding_cache"));
 
         if (!fs.existsSync(ragDir)) {
             fs.mkdirSync(ragDir, { recursive: true });
@@ -68,17 +72,106 @@ export class RAGBase {
         return String(extracted?.getBody?.() || "").trim();
     }
 
-    splitTextWithMetadata(text, metadata, chunkSize = DEFAULT_CHUNK_SIZE, overlap = DEFAULT_CHUNK_OVERLAP) {
+    /**
+     * Chunking sentence-aware: respeta límites de oraciones.
+     * Evita cortar en medio de palabras o frases.
+     */
+    splitSentenceAware(text, metadata, chunkSize = DEFAULT_CHUNK_SIZE, overlap = DEFAULT_CHUNK_OVERLAP) {
+        const normalized = String(text || "")
+            .replace(/\r\n/g, "\n")
+            .replace(/\r/g, "\n")
+            .replace(/\t/g, " ")
+            .trim();
+
+        if (!normalized) return [];
+
+        // Extraer oraciones respetando párrafos
+        const sentences = [];
+        const paragraphs = normalized.split(/\n{2,}/);
+
+        for (const para of paragraphs) {
+            const trimmed = para.trim();
+            if (!trimmed) continue;
+
+            // Dividir en oraciones en límites naturales (sin cortar abreviaciones comunes)
+            const parts = trimmed.split(/(?<=[.!?])\s+(?=[A-ZÁÉÍÓÚÜÑ"'(0-9])/);
+            for (const part of parts) {
+                const s = part.replace(/\n/g, " ").trim();
+                if (s.length >= 10) {
+                    sentences.push(s);
+                } else if (s.length > 0 && sentences.length > 0) {
+                    sentences[sentences.length - 1] += " " + s;
+                }
+            }
+        }
+
+        // Si no hay oraciones detectadas, usar fallback char-based
+        if (sentences.length === 0) {
+            return this.splitCharBased(normalized, metadata, chunkSize, overlap);
+        }
+
+        // Agrupar oraciones en chunks respetando chunkSize
         const chunks = [];
         let chunkId = 0;
+        let currentSentences = [];
+        let currentLength = 0;
 
-        for (let i = 0; i < text.length; i += chunkSize - overlap) {
-            const chunkText = text.slice(i, Math.min(i + chunkSize, text.length));
-
-            if (chunkText.trim()) {
+        const flushChunk = () => {
+            const chunkText = currentSentences.join(" ").trim();
+            if (chunkText.length >= 20) {
                 chunks.push({
                     id: `${metadata.documentId}_chunk_${chunkId++}`,
-                    text: chunkText.trim(),
+                    text: chunkText,
+                    document: metadata.documentName,
+                    documentId: metadata.documentId,
+                    page: metadata.page || null,
+                    section: metadata.section || null,
+                    timestamp: new Date().toISOString()
+                });
+            }
+        };
+
+        for (const sentence of sentences) {
+            if (currentLength + sentence.length > chunkSize && currentSentences.length > 0) {
+                flushChunk();
+
+                // Overlap: llevar las últimas oraciones que quepan en el overlap
+                let overlapChars = 0;
+                const overlapSentences = [];
+                for (let i = currentSentences.length - 1; i >= 0; i--) {
+                    if (overlapChars + currentSentences[i].length <= overlap) {
+                        overlapSentences.unshift(currentSentences[i]);
+                        overlapChars += currentSentences[i].length;
+                    } else {
+                        break;
+                    }
+                }
+
+                currentSentences = overlapSentences;
+                currentLength = overlapChars;
+            }
+
+            currentSentences.push(sentence);
+            currentLength += sentence.length;
+        }
+
+        if (currentSentences.length > 0) flushChunk();
+
+        return chunks;
+    }
+
+    /**
+     * Fallback para textos sin puntuación (tablas, listas densas, etc.)
+     */
+    splitCharBased(text, metadata, chunkSize = DEFAULT_CHUNK_SIZE, overlap = DEFAULT_CHUNK_OVERLAP) {
+        const chunks = [];
+        let chunkId = 0;
+        for (let i = 0; i < text.length; i += chunkSize - overlap) {
+            const chunkText = text.slice(i, Math.min(i + chunkSize, text.length)).trim();
+            if (chunkText.length >= 20) {
+                chunks.push({
+                    id: `${metadata.documentId}_chunk_${chunkId++}`,
+                    text: chunkText,
                     document: metadata.documentName,
                     documentId: metadata.documentId,
                     page: metadata.page || null,
@@ -87,7 +180,6 @@ export class RAGBase {
                 });
             }
         }
-
         return chunks;
     }
 
@@ -97,9 +189,9 @@ export class RAGBase {
             return [];
         }
 
-        if (this.embeddingCache.has(normalizedText)) {
-            return this.embeddingCache.get(normalizedText);
-        }
+        // Buscar en cache (memoria + disco)
+        const cachedEmbedding = this.embeddingCache.get(normalizedText);
+        if (cachedEmbedding) return cachedEmbedding;
 
         try {
             const res = await axios.post(`${OLLAMA_URL}/api/embeddings`, {
@@ -108,6 +200,7 @@ export class RAGBase {
             });
 
             const embedding = res.data.embedding;
+            // Guardar en cache (memoria + disco async)
             this.embeddingCache.set(normalizedText, embedding);
             return embedding;
         } catch (error) {
@@ -163,32 +256,108 @@ export class RAGBase {
         return matches / queryTerms.length;
     }
 
+    // ────────────────────────────────────────────────
+    // INDEXING INCREMENTAL
+    // ────────────────────────────────────────────────
+
+    computeFileHash(filePath) {
+        const buffer = fs.readFileSync(filePath);
+        return createHash("sha256").update(buffer).digest("hex");
+    }
+
+    loadManifest() {
+        const manifestFile = path.join(this.ragDir, "manifest.json");
+        if (!fs.existsSync(manifestFile)) return { files: {} };
+        try {
+            return JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+        } catch {
+            return { files: {} };
+        }
+    }
+
+    saveManifest(manifest) {
+        const manifestFile = path.join(this.ragDir, "manifest.json");
+        fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
+    }
+
+    _writeAtomic(chunks, embeddings) {
+        const tmpChunks = this.chunksFile + ".tmp";
+        const tmpEmbeddings = this.embeddingsFile + ".tmp";
+        fs.writeFileSync(tmpChunks, JSON.stringify(chunks, null, 2));
+        fs.writeFileSync(tmpEmbeddings, JSON.stringify(embeddings, null, 2));
+        fs.renameSync(tmpChunks, this.chunksFile);
+        fs.renameSync(tmpEmbeddings, this.embeddingsFile);
+    }
+
     async indexDocs(docsDir) {
         if (!fs.existsSync(docsDir)) {
-            console.warn(`Directorio ${docsDir} no existe. Creando...`);
             fs.mkdirSync(docsDir, { recursive: true });
             return { chunks: 0, message: "Directorio vacío" };
         }
 
-        const chunks = [];
-        const embeddings = [];
-        const files = fs.readdirSync(docsDir);
+        const SUPPORTED = new Set([".txt", ".md", ".pdf", ".docx", ".doc"]);
+        const allFiles = fs.readdirSync(docsDir)
+            .filter(f => fs.statSync(path.join(docsDir, f)).isFile())
+            .filter(f => SUPPORTED.has(path.extname(f).toLowerCase()));
 
-        if (files.length === 0) {
-            console.warn(`No hay archivos en ${docsDir}`);
+        if (allFiles.length === 0) {
             this.cachedChunks = [];
             this.cachedEmbeddings = [];
-            fs.writeFileSync(this.chunksFile, JSON.stringify([], null, 2));
-            fs.writeFileSync(this.embeddingsFile, JSON.stringify([], null, 2));
+            this._writeAtomic([], []);
+            this.saveManifest({ files: {} });
             return { chunks: 0, documents: 0, domain: this.domainName, message: "No hay documentos para indexar" };
         }
 
-        for (const file of files) {
+        // Calcular hashes de archivos actuales
+        const currentHashes = {};
+        for (const file of allFiles) {
+            currentHashes[file] = this.computeFileHash(path.join(docsDir, file));
+        }
+
+        const manifest = this.loadManifest();
+        const existingChunks = this.loadChunks() || [];
+        const existingEmbeddings = this.loadEmbeddings() || [];
+
+        // Detectar archivos nuevos o modificados
+        const filesToProcess = allFiles.filter(f => manifest.files[f] !== currentHashes[f]);
+        const filesUnchanged = allFiles.filter(f => manifest.files[f] === currentHashes[f]);
+
+        // Detectar documentIds eliminados o modificados (para limpiar chunks viejos)
+        const deletedOrChangedIds = new Set([
+            ...Object.keys(manifest.files)
+                .filter(f => !currentHashes[f])
+                .map(f => path.basename(f, path.extname(f))),
+            ...filesToProcess.map(f => path.basename(f, path.extname(f)))
+        ]);
+
+        // Short-circuit: nada cambió
+        if (filesToProcess.length === 0 && deletedOrChangedIds.size === 0) {
+            console.log(`✅ RAG [${this.domainName}] sin cambios. ${existingChunks.length} chunks.`);
+            this.cachedChunks = existingChunks;
+            this.cachedEmbeddings = existingEmbeddings;
+            return {
+                chunks: existingChunks.length,
+                documents: allFiles.length,
+                reindexed: 0,
+                cached: filesUnchanged.length,
+                domain: this.domainName
+            };
+        }
+
+        // Filtrar chunks/embeddings de docs eliminados o modificados
+        const keepIndices = existingChunks
+            .map((c, i) => (deletedOrChangedIds.has(c.documentId) ? -1 : i))
+            .filter(i => i !== -1);
+
+        const baseChunks = keepIndices.map(i => existingChunks[i]);
+        const baseEmbeddings = keepIndices.map(i => existingEmbeddings[i]);
+
+        // Procesar archivos nuevos o modificados
+        const newChunks = [...baseChunks];
+        const newEmbeddings = [...baseEmbeddings];
+
+        for (const file of filesToProcess) {
             const fullPath = path.join(docsDir, file);
-            const stat = fs.statSync(fullPath);
-
-            if (stat.isDirectory()) continue;
-
             const ext = path.extname(file).toLowerCase();
             const documentId = path.basename(file, ext);
             const documentName = file;
@@ -207,59 +376,51 @@ export class RAGBase {
                     text = await this.readDocx(fullPath);
                 } else if (ext === ".doc") {
                     text = await this.readDoc(fullPath);
-                } else {
-                    console.warn(`Formato no soportado: ${file}`);
-                    continue;
                 }
 
                 if (!String(text || "").trim()) {
-                    console.warn(`Sin texto utilizable para indexar: ${file}`);
+                    console.warn(`Sin texto utilizable: ${file}`);
                     continue;
                 }
 
                 if (pageInfo && pageInfo.length > 0) {
                     for (const page of pageInfo) {
-                        const pageChunks = this.splitTextWithMetadata(page.text, {
-                            documentId,
-                            documentName,
-                            page: page.page
+                        const pageChunks = this.splitSentenceAware(page.text, {
+                            documentId, documentName, page: page.page
                         });
-
                         for (const chunk of pageChunks) {
-                            chunks.push(chunk);
-                            embeddings.push(await this.embed(chunk.text));
+                            newChunks.push(chunk);
+                            newEmbeddings.push(await this.embed(chunk.text));
                         }
                     }
                 } else {
-                    const docChunks = this.splitTextWithMetadata(text, {
-                        documentId,
-                        documentName,
-                        page: null
+                    const docChunks = this.splitSentenceAware(text, {
+                        documentId, documentName, page: null
                     });
-
                     for (const chunk of docChunks) {
-                        chunks.push(chunk);
-                        embeddings.push(await this.embed(chunk.text));
+                        newChunks.push(chunk);
+                        newEmbeddings.push(await this.embed(chunk.text));
                     }
                 }
 
-                console.log(`✓ Indexado: ${file} (${chunks.length} chunks totales)`);
+                console.log(`✓ Indexado: ${file}`);
             } catch (error) {
                 console.error(`Error procesando ${file}: ${error.message}`);
             }
         }
 
-        fs.writeFileSync(this.chunksFile, JSON.stringify(chunks, null, 2));
-        fs.writeFileSync(this.embeddingsFile, JSON.stringify(embeddings, null, 2));
+        this._writeAtomic(newChunks, newEmbeddings);
+        this.saveManifest({ files: currentHashes });
+        this.cachedChunks = newChunks;
+        this.cachedEmbeddings = newEmbeddings;
 
-        this.cachedChunks = chunks;
-        this.cachedEmbeddings = embeddings;
-
-        console.log(`\n✅ RAG [${this.domainName}] indexado: ${chunks.length} chunks`);
+        console.log(`\n✅ RAG [${this.domainName}]: ${newChunks.length} chunks (${filesToProcess.length} reindexados, ${filesUnchanged.length} sin cambios)`);
 
         return {
-            chunks: chunks.length,
-            documents: files.length,
+            chunks: newChunks.length,
+            documents: allFiles.length,
+            reindexed: filesToProcess.length,
+            cached: filesUnchanged.length,
             domain: this.domainName
         };
     }
@@ -288,18 +449,24 @@ export class RAGBase {
                 `${chunk.text || ""} ${chunk.document || ""} ${chunk.section || ""}`
             );
 
+            // Score híbrido mejorado: balance entre vector y keyword
+            // vectorScore: [0, 1] → peso 0.7
+            // keywordScore: [0, 1] → peso 0.3
+            const hybridScore = (vectorScore * 0.7) + (keywordScore * 0.3);
+
             return {
                 chunk,
-                score: vectorScore + (keywordScore * 0.2),
+                score: hybridScore,
                 vectorScore,
                 keywordScore
             };
         });
 
+        // Filtrar y ordenar: requiere vector score > 0.05 O keyword score > 0 para incluir
         const topResults = scores
+            .filter(item => item.vectorScore > 0.05 || item.keywordScore > 0.1)
             .sort((a, b) => b.score - a.score)
-            .slice(0, topK)
-            .filter(item => item.vectorScore > 0.08 || item.keywordScore > 0);
+            .slice(0, topK);
 
         return {
             chunks: topResults.map(item => item.chunk),
@@ -323,6 +490,14 @@ export class RAGBase {
     }
 
     isIndexed() {
-        return fs.existsSync(this.chunksFile) && fs.existsSync(this.embeddingsFile);
+        if (!fs.existsSync(this.chunksFile) || !fs.existsSync(this.embeddingsFile)) {
+            return false;
+        }
+        try {
+            const chunks = JSON.parse(fs.readFileSync(this.chunksFile, "utf8"));
+            return Array.isArray(chunks) && chunks.length > 0;
+        } catch {
+            return false;
+        }
     }
 }

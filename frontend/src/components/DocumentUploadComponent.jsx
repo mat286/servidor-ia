@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import axios from 'axios';
 import './DocumentUploadComponent.css';
+import { API_URL } from '../utils/apiUrl';
 
 const DocumentUploadComponent = ({ onUploadSuccess, agents = [] }) => {
   const [file, setFile] = useState(null);
@@ -9,8 +10,6 @@ const DocumentUploadComponent = ({ onUploadSuccess, agents = [] }) => {
   const [message, setMessage] = useState('');
   const [documents, setDocuments] = useState([]);
   const [error, setError] = useState('');
-  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
-
   const allowedTypes = ['.pdf', '.txt', '.md', '.doc', '.docx'];
 
   // Mapear dominios disponibles

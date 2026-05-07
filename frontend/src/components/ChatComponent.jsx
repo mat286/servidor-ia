@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import './ChatComponent.css';
+import { API_URL } from '../utils/apiUrl';
 
 const MAX_HISTORY_MESSAGES = 12;
 const PRIVATE_AGENT_ID = 'general';
@@ -17,6 +18,7 @@ const DEFAULT_EDITOR_FORMAT = {
     marginBottomCm: 2.5,
     marginLeftCm: 3
 };
+const EDITOR_MODIFY_REGEX = /(resum|reescri|correg|edit|modific|cambi|ajust|elimin|quit|borr|agreg|complet|orden|mejor|adapt|convert|unific|redact|simplific|abrevi|expand|formate|limpi|pul|estructura)/i;
 const getHistoryStorageKey = (agentId) => `chat_history_${agentId || 'auto'}`;
 
 const escapeHtml = (text) => String(text ?? '')
@@ -99,6 +101,59 @@ const renderFormattedMessage = (text) => {
     });
 };
 
+const buildLineDiff = (beforeText = '', afterText = '') => {
+    const beforeLines = String(beforeText || '').replace(/\r/g, '').split('\n');
+    const afterLines = String(afterText || '').replace(/\r/g, '').split('\n');
+    const left = [];
+    const right = [];
+
+    let i = 0;
+    let j = 0;
+
+    while (i < beforeLines.length || j < afterLines.length) {
+        const b = beforeLines[i];
+        const a = afterLines[j];
+
+        if (i < beforeLines.length && j < afterLines.length && b === a) {
+            left.push({ text: b, type: 'same' });
+            right.push({ text: a, type: 'same' });
+            i += 1;
+            j += 1;
+            continue;
+        }
+
+        if (i + 1 < beforeLines.length && beforeLines[i + 1] === a) {
+            left.push({ text: b, type: 'removed' });
+            right.push({ text: '', type: 'empty' });
+            i += 1;
+            continue;
+        }
+
+        if (j + 1 < afterLines.length && b === afterLines[j + 1]) {
+            left.push({ text: '', type: 'empty' });
+            right.push({ text: a, type: 'added' });
+            j += 1;
+            continue;
+        }
+
+        if (i < beforeLines.length) {
+            left.push({ text: b, type: 'changed' });
+            i += 1;
+        }
+
+        if (j < afterLines.length) {
+            right.push({ text: a, type: 'changed' });
+            j += 1;
+        }
+    }
+
+    const maxLen = Math.max(left.length, right.length);
+    while (left.length < maxLen) left.push({ text: '', type: 'empty' });
+    while (right.length < maxLen) right.push({ text: '', type: 'empty' });
+
+    return { left, right };
+};
+
 const buildHistoryPayload = (messages) => {
     return messages
         .filter(msg => (msg.sender === 'user' || msg.sender === 'ai') && msg.text)
@@ -150,11 +205,11 @@ const ChatComponent = ({ selectedAgent = 'auto', agents = [] }) => {
     const [editorFormat, setEditorFormat] = useState(DEFAULT_EDITOR_FORMAT);
     const [generatedDocument, setGeneratedDocument] = useState(null);
     const [editorWorkingContent, setEditorWorkingContent] = useState('');
+    const [pendingEditorModification, setPendingEditorModification] = useState(null);
     const [showEditorPreviewModal, setShowEditorPreviewModal] = useState(false);
     const [showDownloadOptions, setShowDownloadOptions] = useState(false);
     const messagesEndRef = useRef(null);
     const privateFileInputRef = useRef(null);
-    const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
     const isPrivateAssistant = selectedAgent === PRIVATE_AGENT_ID;
     const isEditorAgent = selectedAgent === EDITOR_AGENT_ID;
     const supportsManagedFiles = isPrivateAssistant || isEditorAgent;
@@ -166,6 +221,10 @@ const ChatComponent = ({ selectedAgent = 'auto', agents = [] }) => {
         return `${file.originalName || ''} ${file.filename || ''}`.toLowerCase().includes(query);
     });
     const selectedEditorFileInfo = privateFiles.find(file => file.filename === selectedEditorFile) || null;
+    const originalForDiff = generatedDocument?.originalContent || '';
+    const editedForDiff = generatedDocument?.workingContent || editorWorkingContent || '';
+    const showEditorDiff = isEditorAgent && originalForDiff && editedForDiff;
+    const diffLines = showEditorDiff ? buildLineDiff(originalForDiff, editedForDiff) : null;
 
     const updateEditorFormat = (field, value) => {
         setEditorFormat(prev => ({
@@ -177,6 +236,7 @@ const ChatComponent = ({ selectedAgent = 'auto', agents = [] }) => {
     const resetEditorSessionState = () => {
         setGeneratedDocument(null);
         setEditorWorkingContent('');
+        setPendingEditorModification(null);
         setShowEditorPreviewModal(false);
         setShowDownloadOptions(false);
     };
@@ -435,6 +495,7 @@ const ChatComponent = ({ selectedAgent = 'auto', agents = [] }) => {
                     instructions: editorRequest.instructions,
                     conversationHistory: editorRequest.conversationHistory,
                     baseContent: editorWorkingContent,
+                    skipGeneration: !previewOnly && Boolean(editorWorkingContent.trim()),
                     previewOnly,
                     outputType: previewOnly ? 'md' : editorFormat.outputType,
                     formatting: {
@@ -484,10 +545,34 @@ const ChatComponent = ({ selectedAgent = 'auto', agents = [] }) => {
 
     const handlePreviewDocument = async () => {
         setShowDownloadOptions(false);
+
+        if (editorWorkingContent.trim()) {
+            setGeneratedDocument(prev => ({
+                ...(prev || {}),
+                outputType: 'preview',
+                preview: editorWorkingContent.slice(0, 12000),
+                workingContent: editorWorkingContent
+            }));
+            setShowEditorPreviewModal(true);
+            return;
+        }
+
         await handleGenerateDocument({ previewOnly: true });
     };
 
     const handleOpenDownloadOptions = async () => {
+        if (editorWorkingContent.trim()) {
+            setGeneratedDocument(prev => ({
+                ...(prev || {}),
+                outputType: 'preview',
+                preview: editorWorkingContent.slice(0, 12000),
+                workingContent: editorWorkingContent
+            }));
+            setShowEditorPreviewModal(true);
+            setShowDownloadOptions(true);
+            return;
+        }
+
         if (!generatedDocument?.preview) {
             const preview = await handleGenerateDocument({ previewOnly: true });
             if (!preview) {
@@ -500,8 +585,294 @@ const ChatComponent = ({ selectedAgent = 'auto', agents = [] }) => {
         setShowDownloadOptions(true);
     };
 
+    const handleEditorChatJson = async (prompt, options = {}) => {
+        const {
+            applyChanges = false,
+            displayPrompt = null,
+            appendUserMessage = true
+        } = options;
+
+        if (!selectedEditorFile) {
+            setPrivateActionError('Seleccioná un archivo activo en el editor antes de enviar mensajes');
+            return;
+        }
+
+        const history = buildHistoryPayload(messages);
+        const tempMessageId = Date.now();
+        const userText = displayPrompt || prompt;
+        const newMessage = {
+            id: tempMessageId,
+            text: userText,
+            sender: 'user',
+            timestamp: new Date()
+        };
+
+        const nextMessages = appendUserMessage ? [...messages, newMessage] : [...messages];
+        const editorRequest = buildEditorDocumentRequest(
+            nextMessages,
+            selectedEditorFileInfo?.originalName || selectedEditorFile,
+            Boolean(editorWorkingContent.trim())
+        );
+
+        if (appendUserMessage) {
+            setMessages(nextMessages);
+        }
+        setInput('');
+        setLoading(true);
+        setCurrentAgentInfo({ agent: 'editor', dominio: 'editor' });
+        setPrivateActionError('');
+        setShowDownloadOptions(false);
+
+        try {
+            const response = await fetch(`${API_URL}/editor/chat`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    prompt,
+                    history,
+                    filename: selectedEditorFile,
+                    baseContent: editorWorkingContent,
+                    conversationHistory: editorRequest.conversationHistory,
+                    applyChanges
+                })
+            });
+
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(data.error || `Error ${response.status}`);
+            }
+
+            const aiMessage = {
+                id: Date.now() + 1,
+                text: data.respuesta || 'No se obtuvo respuesta del editor. Probá reformulando el pedido.',
+                sender: 'ai',
+                timestamp: new Date(),
+                citations: data.citas || [],
+                agent: data.agente || 'editor',
+                dominio: data.dominio || 'editor',
+                sinInformacion: data.sinInformacion || false,
+                metrics: data.metrics || null
+            };
+
+            setMessages(prev => [...prev, aiMessage]);
+
+            if (data.requiereConfirmacion) {
+                setPendingEditorModification({ prompt });
+                setPrivateActionMessage('⏳ Esperando confirmación para aplicar cambios. Escribí "OK" para continuar.');
+            } else {
+                setPendingEditorModification(null);
+            }
+
+            if (data.archivo) {
+                setGeneratedDocument(data.archivo);
+                setEditorWorkingContent(data.archivo.workingContent || data.archivo.preview || '');
+                if (!data.requiereConfirmacion) {
+                    setPrivateActionMessage('📝 Documento actualizado con el último pedido del chat');
+                }
+            }
+        } catch (error) {
+            console.error('Error en chat editor JSON:', error);
+            setMessages(prev => [
+                ...prev,
+                {
+                    id: Date.now() + 2,
+                    text: `❌ Error: ${error.message}`,
+                    sender: 'error',
+                    timestamp: new Date()
+                }
+            ]);
+            if (/archivo fuente no existe/i.test(error.message || '')) {
+                setPendingEditorModification(null);
+                setPrivateActionMessage('⚠️ El archivo ya no está en el servidor. Si tenías un borrador en pantalla, seguí trabajando y volvé a subir el archivo para persistirlo.');
+            }
+            setPrivateActionError(error.message || 'No se pudo procesar el mensaje del editor');
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleEditorProposalStream = async (prompt) => {
+        if (!selectedEditorFile) {
+            setPrivateActionError('Seleccioná un archivo activo en el editor antes de enviar mensajes');
+            return;
+        }
+
+        const history = buildHistoryPayload(messages);
+        const tempMessageId = Date.now();
+        const newMessage = {
+            id: tempMessageId,
+            text: prompt,
+            sender: 'user',
+            timestamp: new Date()
+        };
+
+        setMessages(prev => [...prev, newMessage]);
+        setInput('');
+        setLoading(true);
+        setCurrentAgentInfo({ agent: 'editor', dominio: 'editor' });
+        setPrivateActionError('');
+        setShowDownloadOptions(false);
+
+        try {
+            const response = await fetch(`${API_URL}/editor/propuesta-stream`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Accept': 'text/event-stream'
+                },
+                body: JSON.stringify({
+                    prompt,
+                    history,
+                    filename: selectedEditorFile,
+                    baseContent: editorWorkingContent
+                })
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({ error: 'Error desconocido' }));
+                throw new Error(errorData.error || `Error ${response.status}`);
+            }
+
+            if (!response.body) {
+                throw new Error('No response body');
+            }
+
+            const aiMessage = {
+                id: Date.now() + 1,
+                text: '',
+                sender: 'ai',
+                timestamp: new Date(),
+                citations: [],
+                agent: 'editor',
+                dominio: 'editor',
+                sinInformacion: false,
+                requiresConfirmation: false,
+                confirmation: null
+            };
+
+            setMessages(prev => [...prev, aiMessage]);
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+
+                    const data = line.slice(6).trim();
+                    if (data === '[DONE]') continue;
+
+                    try {
+                        const parsed = JSON.parse(data);
+
+                        if (parsed.type === 'meta') {
+                            continue;
+                        }
+
+                        if (parsed.type === 'chunk') {
+                            setMessages(prev => {
+                                const lastMsg = prev[prev.length - 1];
+                                if (lastMsg?.sender === 'ai') {
+                                    return [
+                                        ...prev.slice(0, -1),
+                                        { ...lastMsg, text: (lastMsg.text || '') + (parsed.content || '') }
+                                    ];
+                                }
+                                return prev;
+                            });
+                            continue;
+                        }
+
+                        if (parsed.type === 'done') {
+                            const confirmation = parsed.confirmacion || null;
+
+                            setMessages(prev => {
+                                const lastMsg = prev[prev.length - 1];
+                                if (lastMsg?.sender === 'ai') {
+                                    return [
+                                        ...prev.slice(0, -1),
+                                        {
+                                            ...lastMsg,
+                                            requiresConfirmation: Boolean(parsed.requiereConfirmacion),
+                                            confirmation,
+                                            proposalId: parsed.proposalId || null
+                                        }
+                                    ];
+                                }
+                                return prev;
+                            });
+
+                            if (parsed.requiereConfirmacion && confirmation?.promptOriginal) {
+                                setPendingEditorModification({
+                                    prompt: confirmation.promptOriginal,
+                                    proposalId: parsed.proposalId || null
+                                });
+                                setPrivateActionMessage('✅ Propuesta lista. Revisala y presioná "Aplicar cambios" para confirmar.');
+                            }
+                        }
+                    } catch {
+                        // Ignorar eventos no parseables
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('Error en propuesta stream:', error);
+            try {
+                await handleEditorChatJson(prompt, {
+                    applyChanges: false,
+                    appendUserMessage: false
+                });
+                setPrivateActionMessage('⚠️ Se degradó a modo no-stream para mantener la propuesta disponible.');
+            } catch {
+                setMessages(prev => [
+                    ...prev,
+                    {
+                        id: Date.now() + 3,
+                        text: `❌ Error: ${error.message}`,
+                        sender: 'error',
+                        timestamp: new Date()
+                    }
+                ]);
+                setPrivateActionError(error.message || 'No se pudo generar propuesta del editor');
+            }
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleConfirmEditorProposal = async (msg) => {
+        const confirmationPrompt = msg?.confirmation?.promptOriginal || pendingEditorModification?.prompt;
+        if (!confirmationPrompt) {
+            setPrivateActionError('No hay propuesta pendiente para confirmar.');
+            return;
+        }
+
+        await handleEditorChatJson(confirmationPrompt, {
+            applyChanges: true,
+            displayPrompt: '✅ Confirmo aplicar los cambios propuestos'
+        });
+    };
+
+    const isEditorQuestionIntent = (text) => {
+        const value = String(text || '').trim();
+        if (!value) return false;
+        if (EDITOR_MODIFY_REGEX.test(value)) return false;
+        return /\?$/.test(value) || /^(que|qué|como|cómo|cual|cuál|donde|dónde|cuando|cuándo|por que|por qué)/i.test(value);
+    };
+
     // Función para streaming con nuevo sistema multi-agente
-    const handleStreamingChat = async (prompt) => {
+    const handleStreamingChat = async (prompt, options = {}) => {
+        const { preserveEditorDraft = false } = options;
         const history = buildHistoryPayload(messages);
         const tempMessageId = Date.now();
         const newMessage = {
@@ -514,7 +885,7 @@ const ChatComponent = ({ selectedAgent = 'auto', agents = [] }) => {
             ? `Archivo activo para esta conversación: ${selectedEditorFileInfo?.originalName || selectedEditorFile}.\nUsá ese archivo como referencia principal. Si el usuario pide cambios, tomalos como instrucciones para la próxima versión del documento.\n\nMensaje del usuario:\n${prompt}`
             : prompt;
 
-        if (isEditorAgent) {
+        if (isEditorAgent && !preserveEditorDraft) {
             setGeneratedDocument(null);
             setShowDownloadOptions(false);
         }
@@ -560,7 +931,8 @@ const ChatComponent = ({ selectedAgent = 'auto', agents = [] }) => {
                 timestamp: new Date(),
                 citations: [],
                 agent: null,
-                sinInformacion: false
+                sinInformacion: false,
+                metrics: null
             };
 
             setMessages(prev => [...prev, aiMessage]);
@@ -617,7 +989,8 @@ const ChatComponent = ({ selectedAgent = 'auto', agents = [] }) => {
                                             citations: parsed.citas || [],
                                             agent: parsed.agente || selectedAgent,
                                             dominio: parsed.dominio || null,
-                                            sinInformacion: parsed.sinInformacion || false
+                                            sinInformacion: parsed.sinInformacion || false,
+                                            metrics: parsed.metrics || null
                                         }
                                     ];
                                 }
@@ -664,9 +1037,20 @@ const ChatComponent = ({ selectedAgent = 'auto', agents = [] }) => {
     const handleSendMessage = async (e) => {
         e.preventDefault();
 
-        if (!input.trim()) return;
+        const prompt = input.trim();
+        if (!prompt) return;
 
-        await handleStreamingChat(input.trim());
+        if (isEditorAgent) {
+            if (isEditorQuestionIntent(prompt)) {
+                await handleEditorChatJson(prompt, { applyChanges: false });
+                return;
+            }
+
+            await handleEditorProposalStream(prompt);
+            return;
+        }
+
+        await handleStreamingChat(prompt);
     };
 
     // Obtener nombre del agente para mostrar
@@ -893,6 +1277,16 @@ const ChatComponent = ({ selectedAgent = 'auto', agents = [] }) => {
                 </div>
             )}
 
+            {isEditorAgent && pendingEditorModification && (
+                <div className="editor-confirm-box">
+                    <strong>⏳ Cambio pendiente</strong>
+                    <small>
+                        El editor propuso cambios y está esperando confirmación. Revisá la propuesta y usá el botón <strong>Aplicar cambios</strong>.
+                    </small>
+                </div>
+            )}
+
+            <div className={isEditorAgent ? 'editor-live-layout' : ''}>
             <div className="messages-container">
                 {messages.length === 0 && (
                     <div className="empty-state">
@@ -959,10 +1353,36 @@ const ChatComponent = ({ selectedAgent = 'auto', agents = [] }) => {
                                 </div>
                             )}
 
+                            {msg.metrics && (
+                                <div className="message-metrics">
+                                    <small>
+                                        ⏱️ Total: {msg.metrics.totalMs || '-'} ms
+                                        {typeof msg.metrics.ragMs === 'number' ? ` · RAG: ${msg.metrics.ragMs} ms` : ''}
+                                        {typeof msg.metrics.llmMs === 'number' ? ` · LLM: ${msg.metrics.llmMs} ms` : ''}
+                                    </small>
+                                </div>
+                            )}
+
                             {/* Info del agente usado (solo en modo auto) */}
                             {selectedAgent === 'auto' && msg.agent && (
                                 <div className="message-agent-info">
                                     <small>Agente usado: {msg.agent}</small>
+                                </div>
+                            )}
+
+                            {isEditorAgent && msg.requiresConfirmation && (
+                                <div className="editor-proposal-actions">
+                                    <button
+                                        type="button"
+                                        className="editor-confirm-button"
+                                        onClick={() => handleConfirmEditorProposal(msg)}
+                                        disabled={loading}
+                                    >
+                                        ✅ Aplicar cambios
+                                    </button>
+                                    <small>
+                                        Si querés ajustar la propuesta, escribí una nueva indicación en el chat antes de confirmar.
+                                    </small>
                                 </div>
                             )}
 
@@ -986,6 +1406,59 @@ const ChatComponent = ({ selectedAgent = 'auto', agents = [] }) => {
                 )}
 
                 <div ref={messagesEndRef} />
+            </div>
+
+            {isEditorAgent && (
+                <aside className="editor-live-preview-pane">
+                    <div className="editor-live-preview-header">
+                        <strong>📄 Archivo en edición</strong>
+                        <small>
+                            Vista en vivo de la última versión modificada del documento.
+                        </small>
+                    </div>
+
+                    <div className="editor-live-preview-content">
+                        {generatedDocument?.preview || editorWorkingContent ? (
+                            <div className="editor-preview-content">
+                                {renderFormattedMessage(generatedDocument?.preview || editorWorkingContent)}
+                            </div>
+                        ) : (
+                            <div className="editor-preview-empty">
+                                Todavía no hay contenido generado. Enviá un pedido por chat para ver cambios acá.
+                            </div>
+                        )}
+                    </div>
+
+                    {showEditorDiff && (
+                        <div className="editor-diff-block">
+                            <div className="editor-diff-title">Comparación antes/después</div>
+                            <div className="editor-diff-columns">
+                                <div className="editor-diff-column">
+                                    <div className="editor-diff-header">Antes (archivo original)</div>
+                                    <div className="editor-diff-content">
+                                        {diffLines?.left.map((line, idx) => (
+                                            <div key={`left-${idx}`} className={`diff-line diff-line-${line.type}`}>
+                                                {line.text || ' '}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <div className="editor-diff-column">
+                                    <div className="editor-diff-header">Después (propuesta aplicada)</div>
+                                    <div className="editor-diff-content">
+                                        {diffLines?.right.map((line, idx) => (
+                                            <div key={`right-${idx}`} className={`diff-line diff-line-${line.type}`}>
+                                                {line.text || ' '}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </aside>
+            )}
             </div>
 
             {isEditorAgent && showEditorPreviewModal && (
@@ -1014,9 +1487,9 @@ const ChatComponent = ({ selectedAgent = 'auto', agents = [] }) => {
                             </div>
 
                             <div className="editor-preview-body">
-                                {generatedDocument?.preview ? (
+                                {(generatedDocument?.workingContent || editorWorkingContent || generatedDocument?.preview) ? (
                                     <div className="editor-preview-content">
-                                        {renderFormattedMessage(generatedDocument.preview)}
+                                        {renderFormattedMessage(generatedDocument?.workingContent || editorWorkingContent || generatedDocument?.preview)}
                                     </div>
                                 ) : (
                                     <div className="editor-preview-empty">

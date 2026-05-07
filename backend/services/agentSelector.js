@@ -130,6 +130,15 @@ export class AgentSelector {
                 "borrador", "nota", "memo", "memorando", "minuta", "correo", "mail",
                 "presupuesto", "crédito", "ejecución", "onp", "oficina nacional de presupuesto"
             ],
+            pasaporte: [
+                "pasaporte", "renovar pasaporte", "sacar pasaporte", "tramite pasaporte",
+                "visa", "viaje internacional", "documento de viaje", "viajar al exterior"
+            ],
+            atencionDNI: [
+                "dni", "documento nacional de identidad", "renovar dni", "sacar dni",
+                "tramite dni", "duplicado dni", "robo dni", "extravío dni", "actualizar dni",
+                "documento de identidad"
+            ],
             conversacional: [
                 "hola", "buenos días", "buenas tardes", "buenas noches", "cómo estás",
                 "quien sos", "qué puedes hacer", "charlar", "conversar", "hablar"

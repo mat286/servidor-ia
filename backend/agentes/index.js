@@ -6,6 +6,8 @@ import { documental } from "./documental/documental.js";
 import { bi } from "./BI/bi.js";
 import { eSidif } from "./esidif/esidif.js";
 import { editor } from "./editor/editor.js";
+import { pasaporte } from "./pasaporte/pasaporte.js";
+import { atencionDNI } from "./atencionDNI/atencionDNI.js";
 
 /**
  * Registro de todos los agentes disponibles en el sistema
@@ -18,7 +20,9 @@ export const agentes = {
     general,
     bi,
     esidif: eSidif,
-    editor
+    editor,
+    pasaporte,
+    atencionDNI
 };
 
 /**

@@ -22,7 +22,7 @@ export class AgenteBase {
             systemPrompt,
             ragDomain,
             ragDir,
-            model = "llama3"
+            model = process.env.MODELO_TEXTO || "qwen2.5:3b"
         } = config;
 
         if (!nombre || !systemPrompt || !ragDomain) {
@@ -42,13 +42,14 @@ export class AgenteBase {
         this.llm = new LLMService(this.model);
 
         // Prompt completo con instrucciones de citas
-        this.fullSystemPrompt = `${this.systemPrompt}\n\n${getCitationInstructions()}`;
+        this.fullSystemPrompt = this.systemPrompt;
     }
 
     /**
      * Procesa una pregunta usando el RAG del agente
      */
     async procesarPregunta(pregunta, options = {}) {
+        const t0 = Date.now();
         const {
             topK = Number(process.env.RAG_TOP_K || 4),
             stream = false,
@@ -69,13 +70,16 @@ export class AgenteBase {
                     ? await this.llm.generateStream(promptConHistorial, this.systemPrompt, onChunk)
                     : await this.llm.generate(promptConHistorial, this.systemPrompt);
 
+                const totalMs = Date.now() - t0;
+
                 return {
                     respuesta: respuestaDirecta,
                     citas: [],
                     contexto: null,
                     agente: this.nombre,
                     dominio: this.ragDomain,
-                    sinInformacion: false
+                    sinInformacion: false,
+                    metrics: { totalMs, ragMs: 0, llmMs: totalMs }
                 };
             }
 
@@ -97,7 +101,9 @@ export class AgenteBase {
         }
 
         // 2. Buscar contexto relevante
+        const ragStart = Date.now();
         const searchResult = await this.rag.searchContext(pregunta, topK);
+        const ragMs = Date.now() - ragStart;
         
         if (!searchResult.chunks || searchResult.chunks.length === 0) {
             const respuestaSinContexto = `No hay información suficiente en la base documental del dominio "${this.ragDomain}" para responder esta pregunta.`;
@@ -126,6 +132,7 @@ export class AgenteBase {
         // 5. Generar respuesta con LLM
         let respuesta;
         
+        const llmStart = Date.now();
         if (stream && onChunk) {
             respuesta = await this.llm.generateStream(
                 promptFinal,
@@ -138,6 +145,7 @@ export class AgenteBase {
                 this.fullSystemPrompt
             );
         }
+        const llmMs = Date.now() - llmStart;
 
         // 6. Asegurar que las citas estén en la respuesta
         const respuestaConCitas = this.agregarCitasFinales(this.limpiarReferenciasModelo(respuesta), citas);
@@ -147,7 +155,8 @@ export class AgenteBase {
             citas: citas,
             contexto: searchResult.chunks,
             agente: this.nombre,
-            dominio: this.ragDomain
+            dominio: this.ragDomain,
+            metrics: { totalMs: Date.now() - t0, ragMs, llmMs }
         };
     }
 

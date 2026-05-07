@@ -19,5 +19,5 @@ IMPORTANTE:
 - No inventes procedimientos ni requisitos
 `,
     ragDomain: "pasaporte",
-    model: "llama3"
+    model: process.env.MODELO_TEXTO || "qwen2.5:3b"
 });

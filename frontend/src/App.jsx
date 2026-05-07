@@ -2,8 +2,29 @@ import React, { useState, useEffect } from 'react';
 import ChatComponent from './components/ChatComponent';
 import DocumentUploadComponent from './components/DocumentUploadComponent';
 import './App.css';
+import { API_URL } from './utils/apiUrl';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+const AGENT_UI_MAP = {
+  conversacional: { icon: '🆔', name: 'conversacional', color: '#f093fb' },
+  documental: { icon: '📄', name: 'Documental', color: '#4facfe' },
+  soporteTecnico: { icon: '🛠️', name: 'Soporte Técnico', color: '#667eea' },
+  general: { icon: '🔒', name: 'Asistente Privado', color: '#43e97b' },
+  editor: { icon: '✍️', name: 'Editor de Documentos', color: '#9b59b6' },
+  bi: { icon: '📈', name: 'BI y Reportes', color: '#ff9f43' },
+  esidif: { icon: '🏛️', name: 'e-SIDIF', color: '#00b894' }
+};
+
+function formatAgents(data = { agentes: [] }) {
+  const list = Array.isArray(data.agentes) ? data.agentes : [];
+  return list.map(agent => ({
+    id: agent.nombre,
+    name: AGENT_UI_MAP[agent.nombre]?.name || agent.nombre,
+    icon: AGENT_UI_MAP[agent.nombre]?.icon || '🤖',
+    color: AGENT_UI_MAP[agent.nombre]?.color || '#667eea',
+    hasDocuments: agent.info?.tieneDocumentos || false,
+    domain: agent.info?.dominio || agent.nombre
+  }));
+}
 
 function App() {
   const getCurrentView = () => window.location.pathname.startsWith('/documentos') ? 'documentos' : 'chat';
@@ -13,6 +34,10 @@ function App() {
   const [uploadSuccess, setUploadSuccess] = useState(null);
   const [agents, setAgents] = useState([]);
   const [loadingAgents, setLoadingAgents] = useState(true);
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const activeAgent = selectedAgent === 'auto'
+    ? { name: 'Auto (Selección Inteligente)', icon: '🎯' }
+    : agents.find(agent => agent.id === selectedAgent) || { name: selectedAgent, icon: '🤖' };
 
   useEffect(() => {
     const onPopState = () => setCurrentView(getCurrentView());
@@ -26,6 +51,7 @@ function App() {
       window.history.pushState({}, '', nextPath);
     }
     setCurrentView(view);
+    setIsMobileSidebarOpen(false);
   };
 
   // Cargar agentes disponibles desde el backend
@@ -34,28 +60,8 @@ function App() {
       try {
         const response = await fetch(`${API_URL}/agentes`);
         const data = await response.json();
-        
-        // Mapear agentes con iconos y colores
-        const agentMap = {
-          'conversacional': { icon: '🆔', name: 'conversacional', color: '#f093fb' },
-          'documental': { icon: '📄', name: 'Documental', color: '#4facfe' },
-          'soporteTecnico': { icon: '🛠️', name: 'Soporte Técnico', color: '#667eea' },
-          'general': { icon: '🔒', name: 'Asistente Privado', color: '#43e97b' },
-          'editor': { icon: '✍️', name: 'Editor de Documentos', color: '#9b59b6' },
-          'bi': { icon: '📈', name: 'BI y Reportes', color: '#ff9f43' },
-          'esidif': { icon: '🏛️', name: 'e-SIDIF', color: '#00b894' }
-        };
 
-        const formattedAgents = data.agentes.map(agent => ({
-          id: agent.nombre,
-          name: agentMap[agent.nombre]?.name || agent.nombre,
-          icon: agentMap[agent.nombre]?.icon || '🤖',
-          color: agentMap[agent.nombre]?.color || '#667eea',
-          hasDocuments: agent.info?.tieneDocumentos || false,
-          domain: agent.info?.dominio || agent.nombre
-        }));
-
-        setAgents(formattedAgents);
+        setAgents(formatAgents(data));
       } catch (error) {
         console.error('Error cargando agentes:', error);
         // Fallback a agentes por defecto
@@ -83,28 +89,7 @@ function App() {
       setUploadSuccess(null);
       fetch(`${API_URL}/agentes`)
         .then(res => res.json())
-        .then(data => {
-          const agentMap = {
-            'conversacional': { icon: '🆔', name: 'conversacional', color: '#f093fb' },
-            'documental': { icon: '📄', name: 'Documental', color: '#4facfe' },
-            'soporteTecnico': { icon: '🛠️', name: 'Soporte Técnico', color: '#667eea' },
-            'general': { icon: '🔒', name: 'Asistente Privado', color: '#43e97b' },
-            'editor': { icon: '✍️', name: 'Editor de Documentos', color: '#9b59b6' },
-            'bi': { icon: '📈', name: 'BI y Reportes', color: '#ff9f43' },
-            'esidif': { icon: '🏛️', name: 'e-SIDIF', color: '#00b894' }
-          };
-
-          const formattedAgents = data.agentes.map(agent => ({
-            id: agent.nombre,
-            name: agentMap[agent.nombre]?.name || agent.nombre,
-            icon: agentMap[agent.nombre]?.icon || '🤖',
-            color: agentMap[agent.nombre]?.color || '#667eea',
-            hasDocuments: agent.info?.tieneDocumentos || false,
-            domain: agent.info?.dominio || agent.nombre
-          }));
-
-          setAgents(formattedAgents);
-        })
+        .then(data => setAgents(formatAgents(data)))
         .catch(console.error);
     }, 3000);
   };
@@ -117,7 +102,20 @@ function App() {
           <p>Chat inteligente con agentes especializados y un Asistente Privado para resumir o redactar contenido sensible</p>
         </div>
 
+        <div className="header-context">
+          <span className="header-context-chip">Vista: {currentView === 'chat' ? 'Chat' : 'Documentos'}</span>
+          <span className="header-context-chip">Agente activo: {activeAgent.icon} {activeAgent.name}</span>
+        </div>
+
         <div className="header-actions">
+          <button
+            className="sidebar-toggle"
+            onClick={() => setIsMobileSidebarOpen(prev => !prev)}
+            aria-label="Abrir panel de agentes"
+          >
+            ☰ Agentes
+          </button>
+
           <div className="top-nav">
             <button
               className={`top-nav-button ${currentView === 'chat' ? 'active' : ''}`}
@@ -139,9 +137,18 @@ function App() {
         </div>
       </div>
 
-      <div className="app-container">
+      <div className={`app-container ${isMobileSidebarOpen ? 'sidebar-open' : ''}`}>
+        {isMobileSidebarOpen && (
+          <button
+            type="button"
+            className="sidebar-backdrop"
+            onClick={() => setIsMobileSidebarOpen(false)}
+            aria-label="Cerrar panel de agentes"
+          />
+        )}
+
         {/* Sidebar */}
-        <aside className="sidebar">
+        <aside className={`sidebar ${isMobileSidebarOpen ? 'open' : ''}`}>
           <div className="sidebar-section">
             <h3>Agentes Disponibles</h3>
             {loadingAgents ? (
@@ -151,7 +158,10 @@ function App() {
                 {/* Opción Auto */}
                 <button
                   className={`agent-button ${selectedAgent === 'auto' ? 'active' : ''}`}
-                  onClick={() => setSelectedAgent('auto')}
+                  onClick={() => {
+                    setSelectedAgent('auto');
+                    setIsMobileSidebarOpen(false);
+                  }}
                   style={{
                     borderLeftColor: selectedAgent === 'auto' ? '#667eea' : 'transparent'
                   }}
@@ -166,7 +176,10 @@ function App() {
                   <button
                     key={agent.id}
                     className={`agent-button ${selectedAgent === agent.id ? 'active' : ''}`}
-                    onClick={() => setSelectedAgent(agent.id)}
+                    onClick={() => {
+                      setSelectedAgent(agent.id);
+                      setIsMobileSidebarOpen(false);
+                    }}
                     style={{
                       borderLeftColor: selectedAgent === agent.id ? agent.color : 'transparent'
                     }}
